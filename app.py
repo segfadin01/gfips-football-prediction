@@ -1,14 +1,12 @@
-
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, time, timezone
 
+import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
 
-# =========================================================
-# GFIPS — GLOBAL FOOTBALL INTELLIGENCE & PREDICTION SYSTEM
-# =========================================================
+API_BASE = "https://api.5dollarfootballapi.com/v1"
 
 st.set_page_config(
     page_title="GFIPS | Football Intelligence",
@@ -16,124 +14,39 @@ st.set_page_config(
     layout="wide",
 )
 
-# 5DollarFootballAPI's API-Football-compatible endpoint
-API_BASE_URL = "https://api-football.5dollarfootballapi.com"
-
-
-# =========================================================
-# API CONNECTION
-# =========================================================
-
-def get_api_key():
-    try:
-        return st.secrets["FOOTBALL_API_KEY"]
-    except (KeyError, FileNotFoundError):
-        return None
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def api_request(endpoint, params, api_key):
-    if not api_key:
-        raise ValueError(
-            "FOOTBALL_API_KEY was not found in Streamlit Secrets."
-        )
-
-    response = requests.get(
-        f"{API_BASE_URL}/{endpoint.lstrip('/')}",
-        headers={"x-apisports-key": api_key},
-        params=params,
-        timeout=30,
-    )
-
-    if response.status_code == 401:
-        raise ValueError(
-            "Authentication failed. Check that your new API key "
-            "was copied correctly into Streamlit Secrets."
-        )
-
-    if response.status_code == 403:
-        raise ValueError(
-            "Your account plan does not cover this competition, "
-            "season or endpoint. Try a supported league or date."
-        )
-
-    if response.status_code == 429:
-        raise ValueError(
-            "The API request limit has been reached. Wait before retrying."
-        )
-
-    response.raise_for_status()
-    payload = response.json()
-
-    # API-Football-compatible responses report many errors here.
-    if payload.get("errors"):
-        raise ValueError(str(payload["errors"]))
-
-    # Also handle errors from other response formats.
-    if payload.get("success") == 0:
-        error = payload.get("error", {})
-        raise ValueError(error.get("message", str(error)))
-
-    return payload
-
-
-def api_rows(payload):
-    """Extract the list of records from compatible API responses."""
-    return payload.get("response", payload.get("data", [])) or []
-
-
-def display_api_error(error):
-    st.error(str(error))
-
-
-# =========================================================
-# LEAGUE LOOKUP
-# =========================================================
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def search_leagues(search_term, api_key):
-    payload = api_request(
-        "leagues",
-        {"search": search_term},
-        api_key,
-    )
-    return api_rows(payload)
-
-
-# Search terms are used to find the new provider's own league IDs.
-LEAGUE_SEARCHES = {
-    "English Premier League": "Premier League",
-    "Spanish La Liga": "La Liga",
-    "Italian Serie A": "Serie A",
-    "German Bundesliga": "Bundesliga",
-    "French Ligue 1": "Ligue 1",
-    "UEFA Champions League": "Champions League",
-    "Major League Soccer": "Major League Soccer",
-}
-
-
-def league_label(item):
-    league = item.get("league", {})
-    country = item.get("country", {})
-    name = league.get("name", "Unknown competition")
-    country_name = country.get("name", "")
-
-    return f"{name} — {country_name}" if country_name else name
-
-
-def find_selected_league(search_term, selected_label, api_key):
-    matches = search_leagues(search_term, api_key)
-
-    for item in matches:
-        if league_label(item) == selected_label:
-            return item
-
-    return None
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 1450px;
+        padding-top: 1.2rem;
+    }
+    [data-testid="stMetric"] {
+        background: linear-gradient(
+            135deg,
+            rgba(15,62,44,.6),
+            rgba(20,28,34,.8)
+        );
+        border: 1px solid #28674d;
+        border-radius: 14px;
+        padding: 14px;
+    }
+    .hero {
+        padding: 24px;
+        border-radius: 18px;
+        color: white;
+        background: linear-gradient(
+            115deg,
+            #0a211c,
+            #13583e,
+            #172e37
+        );
+        margin-bottom: 16px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.sidebar.title("⚽ GFIPS")
 st.sidebar.caption(
@@ -141,424 +54,641 @@ st.sidebar.caption(
 )
 
 page = st.sidebar.radio(
-    "Navigation",
+    "Workspace",
     [
         "Overview",
-        "Live Football Data",
-        "Match Predictor",
+        "Match Explorer",
+        "Fixtures & Results",
+        "API Diagnostics",
         "About GFIPS",
     ],
 )
 
-st.sidebar.divider()
-st.sidebar.caption("Football data by 5DollarFootballAPI")
-st.sidebar.caption(
-    "Predictions are estimates, not guaranteed outcomes."
+st.markdown(
+    """
+    <div class="hero">
+        <h1>Global Football Intelligence</h1>
+        <p>
+        Fixture discovery · Match intelligence · Probability modelling
+        · Transparent evidence
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 
-# =========================================================
-# OVERVIEW
-# =========================================================
+# ---------------------------------------------------------
+# API CONNECTION
+# ---------------------------------------------------------
 
-def show_overview():
-    st.title("⚽ GFIPS Dashboard")
-
-    st.write(
-        "Explore football fixtures and results, retrieve available "
-        "competition data, and experiment with match probabilities."
-    )
-
-    st.info(
-        "Live Football Data retrieves records from the new API. "
-        "The predictor below is experimental and does not yet train "
-        "on real team statistics."
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Live Football Data")
-        st.write(
-            "Search competitions, retrieve fixture records and "
-            "download results as CSV."
-        )
-
-    with col2:
-        st.subheader("Match Predictor")
-        st.write(
-            "Explore estimated home-win, draw and away-win probabilities "
-            "using a simple Poisson model."
-        )
-
-
-# =========================================================
-# LIVE FOOTBALL DATA
-# =========================================================
-
-def show_live_data():
-    st.title("🌍 Live Football Data")
-
-    st.write(
-        "Retrieve football fixtures from 5DollarFootballAPI. "
-        "The available competitions depend on your account plan."
-    )
-
-    api_key = get_api_key()
-
-    if not api_key:
-        st.error(
-            "The FOOTBALL_API_KEY secret is missing. Open "
-            "Streamlit Settings → Secrets and add your new key."
-        )
-        st.code('FOOTBALL_API_KEY = "YOUR_NEW_API_KEY"')
-        return
-
-    search_options = list(LEAGUE_SEARCHES.keys())
-
-    with st.form("gfips_fixture_search"):
-        selected_competition = st.selectbox(
-            "Competition",
-            search_options,
-        )
-
-        today = date.today()
-
-        start_date = st.date_input(
-            "Start date",
-            value=today,
-        )
-
-        end_date = st.date_input(
-            "End date",
-            value=today + timedelta(days=7),
-        )
-
-        submitted = st.form_submit_button(
-            "Fetch Fixtures",
-            type="primary",
-            use_container_width=True,
-        )
-
-    if not submitted:
-        st.caption(
-            "Choose a competition and date range, then click Fetch Fixtures."
-        )
-        return
-
-    if start_date > end_date:
-        st.error("The start date must not be after the end date.")
-        return
-
-    if (end_date - start_date).days > 30:
-        st.error(
-            "Please choose a date range of 30 days or less. "
-            "You can search another period afterward."
-        )
-        return
-
-    search_term = LEAGUE_SEARCHES[selected_competition]
-
+def api_key():
+    """Read the secret without displaying it."""
     try:
-        with st.spinner("Finding the competition in the new API..."):
-            matches = search_leagues(search_term, api_key)
+        return str(
+            st.secrets.get("FOOTBALL_API_KEY", "")
+        ).strip()
+    except Exception:
+        return ""
 
-        if not matches:
-            st.warning(
-                "No matching competition was returned. Try another "
-                "competition or check the provider's league coverage."
-            )
-            return
 
-        # Prefer an exact competition-name match.
-        target_name = search_term.casefold()
-        exact_matches = [
-            item for item in matches
-            if item.get("league", {}).get("name", "").casefold()
-            == target_name
+def api_get(path, params=None):
+    """Send a request to the football data provider."""
+    key = api_key()
+
+    if not key:
+        raise RuntimeError(
+            'FOOTBALL_API_KEY is missing. Add '
+            'FOOTBALL_API_KEY = "your_actual_key" '
+            'in Streamlit Settings → Secrets, then save and reboot.'
+        )
+
+    response = requests.get(
+        API_BASE + path,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+        },
+        params=params or {},
+        timeout=25,
+    )
+
+    if response.status_code in (401, 403):
+        raise RuntimeError(
+            f"API rejected the key or plan "
+            f"(HTTP {response.status_code}). "
+            "Check your key and subscription."
+        )
+
+    response.raise_for_status()
+    payload = response.json()
+
+    if payload.get("success") == 0 or "data" not in payload:
+        raise RuntimeError(
+            str(payload.get("error") or payload)[:500]
+        )
+
+    return payload
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def api_status():
+    return api_get("/status")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def search_leagues(query):
+    return api_get(
+        "/leagues",
+        {
+            "search": query,
+            "per_page": 50,
+        },
+    ).get("data", [])
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fixtures_for_day(day_string, league_id="", status="all"):
+    day = date.fromisoformat(day_string)
+
+    start = int(
+        datetime.combine(
+            day,
+            time.min,
+            tzinfo=timezone.utc,
+        ).timestamp()
+    )
+
+    params = {
+        "start_time": start,
+        "end_time": start + 86400,
+        "status": status,
+        "per_page": 100,
+    }
+
+    if league_id:
+        params["league"] = int(league_id)
+
+    return api_get(
+        "/fixtures",
+        params,
+    ).get("data", [])
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def team_fixtures(team_id):
+    return api_get(
+        f"/teams/{int(team_id)}/fixtures",
+        {
+            "status": "finished",
+            "page": 1,
+            "per_page": 50,
+            "order": "desc",
+        },
+    ).get("data", [])
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fixture_details(fixture_id):
+    return api_get(
+        f"/fixtures/{int(fixture_id)}",
+        {
+            "include": "events,stats",
+        },
+    ).get("data", {})
+
+
+# ---------------------------------------------------------
+# HISTORICAL DATA PROCESSING
+# ---------------------------------------------------------
+
+def avg(values):
+    values = [
+        float(value)
+        for value in values
+        if value is not None
+    ]
+
+    return float(np.mean(values)) if values else None
+
+
+def hist_features(fixtures, team_id, n=10):
+    """
+    Calculate recent scoring, conceding, corner and yellow-card
+    indicators from finished matches returned by the provider.
+    """
+
+    scored = []
+    conceded = []
+    corners_for = []
+    corners_against = []
+    yellows_for = []
+    yellows_against = []
+
+    for fixture in fixtures:
+        if fixture.get("status") != "finished":
+            continue
+
+        teams = fixture.get("teams") or {}
+        goals = fixture.get("goals") or {}
+
+        home = teams.get("home") or {}
+        away = teams.get("away") or {}
+
+        corners = fixture.get("corners") or {}
+        cards = fixture.get("cards") or {}
+
+        home_cards = cards.get("home") or {}
+        away_cards = cards.get("away") or {}
+
+        if home.get("id") == team_id:
+            values = [
+                goals.get("home"),
+                goals.get("away"),
+                corners.get("home"),
+                corners.get("away"),
+                home_cards.get("yellow"),
+                away_cards.get("yellow"),
+            ]
+
+        elif away.get("id") == team_id:
+            values = [
+                goals.get("away"),
+                goals.get("home"),
+                corners.get("away"),
+                corners.get("home"),
+                away_cards.get("yellow"),
+                home_cards.get("yellow"),
+            ]
+
+        else:
+            continue
+
+        targets = [
+            scored,
+            conceded,
+            corners_for,
+            corners_against,
+            yellows_for,
+            yellows_against,
         ]
 
-        choices = exact_matches if exact_matches else matches
+        for target, value in zip(targets, values):
+            target.append(value)
 
-        labels = [league_label(item) for item in choices]
-        selected_label = st.selectbox(
-            "Choose the matching competition",
-            labels,
-        )
+    def recent(values):
+        return [
+            value
+            for value in values
+            if value is not None
+        ][-n:]
 
-        chosen = choices[labels.index(selected_label)]
-        league = chosen.get("league", {})
-        country = chosen.get("country", {})
-
-        league_id = league.get("id")
-
-        if not league_id:
-            st.error(
-                "The API did not return a league ID for this competition."
-            )
-            return
-
-        # Fetch using the new provider's league ID, not the old ID.
-        # The compatible host supports the same from/to fixture filters.
-        params = {
-            "league": league_id,
-            "from": start_date.isoformat(),
-            "to": end_date.isoformat(),
-        }
-
-        seasons = chosen.get("seasons", [])
-        current_seasons = [
-            item.get("year")
-            for item in seasons
-            if item.get("year") is not None
-        ]
-
-        if current_seasons:
-            season_options = sorted(
-                set(current_seasons),
-                reverse=True,
-            )
-            selected_season = st.selectbox(
-                "Season start year",
-                season_options,
-            )
-            params["season"] = selected_season
-
-        with st.spinner("Retrieving fixtures and results..."):
-            payload = api_request("fixtures", params, api_key)
-
-        fixtures = api_rows(payload)
-
-        if not fixtures:
-            st.info(
-                "No fixtures were returned for that competition and "
-                "date range. Try a different date range or competition."
-            )
-            return
-
-        rows = []
-
-        for item in fixtures:
-            fixture = item.get("fixture", {})
-            teams = item.get("teams", {})
-            goals = item.get("goals", {})
-            status = fixture.get("status", {})
-            fixture_league = item.get("league", {})
-            venue = fixture.get("venue", {})
-
-            rows.append(
-                {
-                    "Date": fixture.get("date", ""),
-                    "Competition": fixture_league.get(
-                        "name", league.get("name", "")
-                    ),
-                    "Country": fixture_league.get(
-                        "country", country.get("name", "")
-                    ),
-                    "Home Team": teams.get("home", {}).get("name", ""),
-                    "Away Team": teams.get("away", {}).get("name", ""),
-                    "Home Goals": goals.get("home"),
-                    "Away Goals": goals.get("away"),
-                    "Status": status.get("long", ""),
-                    "Venue": venue.get("name", ""),
-                }
-            )
-
-        df = pd.DataFrame(rows)
-
-        st.success(f"Retrieved {len(df)} fixture record(s).")
-
-        st.metric("Fixtures retrieved", len(df))
-
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        st.download_button(
-            "Download fixtures as CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name="gfips_football_fixtures.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-
-        st.caption(
-            "Football data by 5DollarFootballAPI"
-        )
-
-    except requests.exceptions.Timeout:
-        display_api_error(
-            "The API took too long to respond. Please try again."
-        )
-    except requests.exceptions.RequestException as error:
-        display_api_error(
-            f"Could not connect to the football API: {error}"
-        )
-    except (ValueError, KeyError, TypeError) as error:
-        display_api_error(error)
-    except Exception as error:
-        display_api_error(
-            f"An unexpected error occurred: {error}"
-        )
+    return {
+        "played": min(n, len(recent(scored))),
+        "scored": avg(recent(scored)),
+        "conceded": avg(recent(conceded)),
+        "corners_for": avg(recent(corners_for)),
+        "corners_against": avg(recent(corners_against)),
+        "yellow_for": avg(recent(yellows_for)),
+        "yellow_against": avg(recent(yellows_against)),
+    }
 
 
-# =========================================================
-# EXPERIMENTAL POISSON MATCH PREDICTOR
-# =========================================================
+# ---------------------------------------------------------
+# GOAL PROBABILITY MODEL
+# ---------------------------------------------------------
 
-def poisson_probability(goals, expected_goals):
+def poisson_pmf(goals, expected_goals):
+    expected_goals = max(0.05, float(expected_goals))
+
     return (
         math.exp(-expected_goals)
-        * expected_goals ** goals
+        * expected_goals**goals
         / math.factorial(goals)
     )
 
 
-def predict_match(home_xg, away_xg, max_goals=8):
-    home_win = 0.0
-    draw = 0.0
-    away_win = 0.0
-    scorelines = []
+def score_matrix(home_xg, away_xg):
+    """Create a normalized home-goals by away-goals matrix."""
 
-    for home_goals in range(max_goals + 1):
-        for away_goals in range(max_goals + 1):
-            probability = (
-                poisson_probability(home_goals, home_xg)
-                * poisson_probability(away_goals, away_xg)
-            )
+    home_probabilities = np.array([
+        poisson_pmf(i, home_xg)
+        for i in range(11)
+    ])
 
-            scorelines.append(
-                {
-                    "Score": f"{home_goals}-{away_goals}",
-                    "Probability": probability,
-                }
-            )
+    away_probabilities = np.array([
+        poisson_pmf(i, away_xg)
+        for i in range(11)
+    ])
 
-            if home_goals > away_goals:
-                home_win += probability
-            elif home_goals == away_goals:
-                draw += probability
-            else:
-                away_win += probability
+    matrix = np.outer(
+        home_probabilities,
+        away_probabilities,
+    )
 
-    total = home_win + draw + away_win
+    total = matrix.sum()
 
     if total:
-        home_win /= total
-        draw /= total
-        away_win /= total
+        matrix = matrix / total
 
-    scorelines.sort(
-        key=lambda row: row["Probability"],
-        reverse=True,
+    return matrix
+
+
+# ---------------------------------------------------------
+# PREDICTION MARKETS
+# ---------------------------------------------------------
+
+def predict_markets(
+    home,
+    away,
+    home_features,
+    away_features,
+    matrix,
+    home_xg,
+    away_xg,
+):
+    rows = []
+
+    p_home = sum(
+        matrix[i, j]
+        for i in range(11)
+        for j in range(11)
+        if i > j
     )
 
-    return home_win, draw, away_win, scorelines
-
-
-def show_predictor():
-    st.title("🔮 Match Predictor")
-
-    st.warning(
-        "This is an experimental model. Expected goals are entered "
-        "manually and are not derived from live team statistics."
+    p_draw = sum(
+        matrix[i, j]
+        for i in range(11)
+        for j in range(11)
+        if i == j
     )
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        home_team = st.text_input("Home team", "Arsenal")
-        home_xg = st.slider(
-            "Home expected goals",
-            0.1, 4.0, 1.6, 0.1,
-        )
-
-    with col2:
-        away_team = st.text_input("Away team", "Chelsea")
-        away_xg = st.slider(
-            "Away expected goals",
-            0.1, 4.0, 1.2, 0.1,
-        )
-
-    if st.button("Generate prediction", type="primary"):
-        if not home_team.strip() or not away_team.strip():
-            st.error("Enter both team names.")
-            return
-
-        if home_team.strip().casefold() == away_team.strip().casefold():
-            st.error("Choose two different teams.")
-            return
-
-        home, draw, away, scores = predict_match(home_xg, away_xg)
-
-        a, b, c = st.columns(3)
-        a.metric("Home win", f"{home * 100:.1f}%")
-        b.metric("Draw", f"{draw * 100:.1f}%")
-        c.metric("Away win", f"{away * 100:.1f}%")
-
-        score_df = pd.DataFrame(scores[:5])
-        score_df["Probability (%)"] = (
-            score_df["Probability"] * 100
-        ).round(2)
-
-        st.subheader("Most likely scorelines")
-        st.dataframe(
-            score_df[["Score", "Probability (%)"]],
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        st.caption(
-            "These estimates are not guarantees and should not be "
-            "treated as validated betting predictions."
-        )
-
-
-# =========================================================
-# ABOUT
-# =========================================================
-
-def show_about():
-    st.title("About GFIPS")
-
-    st.markdown(
-        """
-        **Global Football Intelligence & Prediction System**
-
-        GFIPS is a developing football-data platform intended to support
-        fixture exploration, historical analysis and data-driven predictions.
-
-        **Current features**
-        - Fixture retrieval through 5DollarFootballAPI
-        - Competition search using the new provider's IDs
-        - Date filtering and CSV export
-        - Experimental Poisson match predictor
-
-        **Planned improvements**
-        - Historical results and team-form datasets
-        - Team and match statistics where available
-        - Odds and additional markets
-        - Model training and historical backtesting
-        - Prediction-performance reporting
-        """
+    p_away = sum(
+        matrix[i, j]
+        for i in range(11)
+        for j in range(11)
+        if i < j
     )
 
-    st.markdown(
-        "Football data by [5DollarFootballAPI](https://5dollarfootballapi.com)"
+    markets = [
+        (
+            f"{home} win",
+            "Match result",
+            p_home,
+            "Poisson score matrix",
+        ),
+        (
+            "Draw",
+            "Match result",
+            p_draw,
+            "Poisson score matrix",
+        ),
+        (
+            f"{away} win",
+            "Match result",
+            p_away,
+            "Poisson score matrix",
+        ),
+        (
+            "Over 1.5 total goals",
+            "Goals",
+            sum(
+                matrix[i, j]
+                for i in range(11)
+                for j in range(11)
+                if i + j >= 2
+            ),
+            "Poisson score matrix",
+        ),
+        (
+            "Over 2.5 total goals",
+            "Goals",
+            sum(
+                matrix[i, j]
+                for i in range(11)
+                for j in range(11)
+                if i + j >= 3
+            ),
+            "Poisson score matrix",
+        ),
+        (
+            "Under 4.5 total goals",
+            "Goals",
+            sum(
+                matrix[i, j]
+                for i in range(11)
+                for j in range(11)
+                if i + j <= 4
+            ),
+            "Poisson score matrix",
+        ),
+        (
+            "Both teams to score — Yes",
+            "Goals",
+            sum(
+                matrix[i, j]
+                for i in range(1, 11)
+                for j in range(1, 11)
+            ),
+            "Poisson score matrix",
+        ),
+        (
+            f"{home} to score 1+",
+            "Team goals",
+            1 - math.exp(-home_xg),
+            f"Expected goals {home_xg:.2f}",
+        ),
+        (
+            f"{away} to score 1+",
+            "Team goals",
+            1 - math.exp(-away_xg),
+            f"Expected goals {away_xg:.2f}",
+        ),
+    ]
+
+    for name, group, probability, evidence in markets:
+        rows.append({
+            "Selection": name,
+            "Market": group,
+            "Probability": float(probability),
+            "Evidence": evidence,
+            "Data status": "Model estimate",
+        })
+
+    # Corners are estimated only when the required historical fields exist.
+    if all(
+        value is not None
+        for value in [
+            home_features["corners_for"],
+            away_features["corners_for"],
+            home_features["corners_against"],
+            away_features["corners_against"],
+        ]
+    ):
+        home_corners = (
+            home_features["corners_for"]
+            + away_features["corners_against"]
+        ) / 2
+
+        away_corners = (
+            away_features["corners_for"]
+            + home_features["corners_against"]
+        ) / 2
+
+        total_corners = home_corners + away_corners
+
+        p_over_corners = 1 - sum(
+            poisson_pmf(k, total_corners)
+            for k in range(9)
+        )
+
+        p_home_most_corners = (
+            0.5
+            + 0.5 * math.erf(
+                (home_corners - away_corners)
+                / math.sqrt(
+                    2 * max(0.1, home_corners + away_corners)
+                )
+            )
+        )
+
+        rows.extend([
+            {
+                "Selection": "Over 8.5 total corners",
+                "Market": "Corners",
+                "Probability": float(
+                    max(0, min(1, p_over_corners))
+                ),
+                "Evidence": (
+                    f"Estimated total corners "
+                    f"{total_corners:.1f}"
+                ),
+                "Data status": "Historical estimate",
+            },
+            {
+                "Selection": "Most corners: home",
+                "Market": "Corners",
+                "Probability": float(
+                    max(0, min(1, p_home_most_corners))
+                ),
+                "Evidence": (
+                    f"Home {home_corners:.1f} vs "
+                    f"away {away_corners:.1f}"
+                ),
+                "Data status": "Historical estimate",
+            },
+        ])
+
+    # Yellow-card estimates also require historical card data.
+    if all(
+        value is not None
+        for value in [
+            home_features["yellow_for"],
+            away_features["yellow_for"],
+            home_features["yellow_against"],
+            away_features["yellow_against"],
+        ]
+    ):
+        home_yellows = (
+            home_features["yellow_for"]
+            + away_features["yellow_against"]
+        ) / 2
+
+        away_yellows = (
+            away_features["yellow_for"]
+            + home_features["yellow_against"]
+        ) / 2
+
+        total_yellows = home_yellows + away_yellows
+
+        p_under_cards = sum(
+            poisson_pmf(k, total_yellows)
+            for k in range(7)
+        )
+
+        p_home_most_cards = (
+            0.5
+            + 0.5 * math.erf(
+                (home_yellows - away_yellows)
+                / math.sqrt(
+                    2 * max(0.1, total_yellows)
+                )
+            )
+        )
+
+        rows.extend([
+            {
+                "Selection": "Under 6.5 total yellow cards",
+                "Market": "Cards",
+                "Probability": float(p_under_cards),
+                "Evidence": (
+                    f"Estimated yellow cards "
+                    f"{total_yellows:.1f}"
+                ),
+                "Data status": "Historical estimate",
+            },
+            {
+                "Selection": "Most yellow cards: home",
+                "Market": "Cards",
+                "Probability": float(
+                    max(0, min(1, p_home_most_cards))
+                ),
+                "Evidence": (
+                    f"Home {home_yellows:.1f} vs "
+                    f"away {away_yellows:.1f}"
+                ),
+                "Data status": "Historical estimate",
+            },
+        ])
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values("Probability", ascending=False)
+        .reset_index(drop=True)
     )
 
 
-# =========================================================
-# PAGE ROUTING
-# =========================================================
+def fixture_label(fixture):
+    teams = fixture.get("teams") or {}
+
+    home = (teams.get("home") or {}).get("name", "Home")
+    away = (teams.get("away") or {}).get("name", "Away")
+
+    league = (
+        fixture.get("league") or {}
+    ).get("name", "Competition")
+
+    return (
+        f"{fixture.get('kickoff_utc', 'time unknown')} · "
+        f"{league} · {home} vs {away} · "
+        f"{fixture.get('status', 'unknown')}"
+    )
+
+
+# ---------------------------------------------------------
+# OVERVIEW
+# ---------------------------------------------------------
 
 if page == "Overview":
-    show_overview()
-elif page == "Live Football Data":
-    show_live_data()
-elif page == "Match Predictor":
-    show_predictor()
-elif page == "About GFIPS":
-    show_about()
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "API provider",
+        "5DollarFootballAPI",
+    )
+
+    col2.metric(
+        "API version",
+        "Native /v1",
+    )
+
+    col3.metric(
+        "Prediction model",
+        "Poisson baseline",
+    )
+
+    st.subheader("Start analysing a match")
+
+    st.write(
+        "Open **Match Explorer**, search for a competition, "
+        "load fixtures for a date, select a match, and analyse "
+        "recent team history."
+    )
+
+    st.info(
+        "The app does not present demonstration fixtures as live data. "
+        "Markets are only produced when the required statistics exist."
+    )
+
+    st.markdown(
+        """
+        **Current model scope**
+
+        - Goal probabilities use recent scoring and conceding records.
+        - Corners and yellow cards are estimated only when historical
+          fixture records contain those fields.
+        - Historical shots on/off target are not assumed to exist.
+        - Probabilities are experimental and require backtesting.
+        """
+    )
+
+
+# ---------------------------------------------------------
+# MATCH EXPLORER
+# ---------------------------------------------------------
+
+elif page == "Match Explorer":
+    st.subheader("Match Explorer")
+
+    st.caption(
+        "Fixture times are queried in UTC. Select a fixture "
+        "and run its analysis."
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    fixture_day = col1.date_input(
+        "Fixture date (UTC)",
+        date.today(),
+    )
+
+    competition_query = col2.text_input(
+        "Competition search (optional)",
+        placeholder="Premier League",
+    )
+
+    status = col3.selectbox(
+        "Status",
+        ["all", "scheduled", "live", "finished"],
+    )
+
+    league = None
+
+    if competition_query.strip():
+        try:
+            leagues = search_leagues(competition_query)
+
+            if leagues:
+                league_options = {
+                    (
+                        f"{item.get('
